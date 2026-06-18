@@ -1,5 +1,5 @@
 // The address of our FastAPI backend
-const API_URL = "https://authentication-system-4w2o.onrender.com/";
+const API_URL = "https://authentication-system-4w2o.onrender.com";
 
 
 // ─── HELPER: Show a message box ───────────────────────────────────────────────
