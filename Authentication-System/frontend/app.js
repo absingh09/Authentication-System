@@ -5,77 +5,67 @@ const API_URL = "http://127.0.0.1:8000/api/users";
 // ─── HELPER: Show a message box ───────────────────────────────────────────────
 function showMessage(text, type) {
   var messageBox = document.getElementById("message");
-  messageBox.textContent = text;         // Set the text
-  messageBox.className = "message " + type;  // Add "success" or "error" class
-  messageBox.style.display = "block";    // Make it visible
+  messageBox.textContent = text;
+  messageBox.className = "message " + type;
+  messageBox.style.display = "block";
 }
+
 
 // ─── PASSWORD STRENGTH CHECK ──────────────────────────────────────────────────
 function isPasswordStrong(password) {
-  // At least 8 characters
   if (password.length < 8) {
     return { valid: false, reason: "Password must be at least 8 characters." };
   }
-
-  // At least one uppercase letter
   if (!/[A-Z]/.test(password)) {
     return { valid: false, reason: "Password must include at least 1 uppercase letter." };
   }
-
-  // At least one number
   if (!/[0-9]/.test(password)) {
     return { valid: false, reason: "Password must include at least 1 number." };
   }
-
   return { valid: true, reason: "" };
 }
 
-
-// ─── LIVE FEEDBACK WHILE TYPING ────────────────────────────────────────────────
 function checkPasswordStrength() {
-  var password = document.getElementById("password").value;
+  var passwordInput = document.getElementById("password") || document.getElementById("newPassword");
+  var password = passwordInput.value;
   var hint = document.getElementById("passwordHint");
 
   var result = isPasswordStrong(password);
 
   if (password.length === 0) {
-    // Reset to default gray hint when empty
     hint.style.color = "#888";
     hint.textContent = "Must be 8+ characters, with 1 uppercase letter & 1 number";
   } else if (result.valid) {
-    hint.style.color = "#16a34a";   // green
+    hint.style.color = "#16a34a";
     hint.textContent = "✓ Strong password!";
   } else {
-    hint.style.color = "#dc2626";   // red
+    hint.style.color = "#dc2626";
     hint.textContent = result.reason;
   }
 }
 
+
 // ─── REGISTER FUNCTION ────────────────────────────────────────────────────────
 async function register() {
-  // 1. Read values from the input fields
   var username = document.getElementById("username").value.trim();
   var email = document.getElementById("email").value.trim();
   var password = document.getElementById("password").value.trim();
 
-  // 2. Basic check — don't send empty fields
   if (!username || !email || !password) {
     showMessage("Please fill in all fields.", "error");
     return;
   }
 
-  // 2.5 Check password strength before sending to backend
   var strength = isPasswordStrong(password);
   if (!strength.valid) {
     showMessage(strength.reason, "error");
     return;
   }
-  // 3. Disable button so user can't click twice
+
   var btn = document.getElementById("registerBtn");
   btn.disabled = true;
   btn.textContent = "Creating account...";
 
-  // 4. Send the data to our FastAPI backend
   try {
     var response = await fetch(API_URL + "/register", {
       method: "POST",
@@ -85,8 +75,7 @@ async function register() {
 
     var data = await response.json();
 
-  if (response.ok) {
-      // Success! Show message then redirect to login after 1.5 seconds
+    if (response.ok) {
       showMessage("Account created! Redirecting to login...", "success");
       setTimeout(function() {
         window.location.href = "index.html";
@@ -94,16 +83,13 @@ async function register() {
     } else if (response.status === 429) {
       showMessage("Too many attempts. Please wait a minute and try again.", "error");
     } else {
-      // Backend returned an error (e.g. email already exists)
       showMessage(data.detail, "error");
     }
 
   } catch (error) {
-    // Network error (e.g. server not running)
     showMessage("Cannot connect to server. Is it running?", "error");
   }
 
-  // 5. Re-enable the button
   btn.disabled = false;
   btn.textContent = "Create Account";
 }
@@ -111,38 +97,31 @@ async function register() {
 
 // ─── LOGIN FUNCTION ───────────────────────────────────────────────────────────
 async function login() {
-  // 1. Read values from inputs
   var email = document.getElementById("email").value.trim();
   var password = document.getElementById("password").value.trim();
 
-  // 2. Basic check
   if (!email || !password) {
     showMessage("Please fill in all fields.", "error");
     return;
   }
 
-  // 3. Disable button
   var btn = document.getElementById("loginBtn");
   btn.disabled = true;
   btn.textContent = "Logging in...";
 
-  // 4. Send login request to backend
   try {
     var response = await fetch(API_URL + "/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",     // ← IMPORTANT: lets the browser store the cookies sent back
       body: JSON.stringify({ email: email, password: password })
     });
 
     var data = await response.json();
 
     if (response.ok) {
-          // Save BOTH tokens in localStorage
-          localStorage.setItem("token", data.access_token);
-          localStorage.setItem("refresh_token", data.refresh_token);
-
-          // Redirect to dashboard
-          window.location.href = "dashboard.html";
+      // No more localStorage! Cookies are set automatically by the browser.
+      window.location.href = "dashboard.html";
     } else if (response.status === 429) {
       showMessage("Too many login attempts. Please wait a minute and try again.", "error");
     } else {
@@ -153,7 +132,6 @@ async function login() {
     showMessage("Cannot connect to server. Is it running?", "error");
   }
 
-  // 5. Re-enable button
   btn.disabled = false;
   btn.textContent = "Login";
 }
@@ -161,30 +139,12 @@ async function login() {
 
 // ─── REFRESH THE ACCESS TOKEN ─────────────────────────────────────────────────
 async function refreshAccessToken() {
-  var refreshToken = localStorage.getItem("refresh_token");
-
-  if (!refreshToken) {
-    return false;   // No refresh token available, user must login again
-  }
-
   try {
     var response = await fetch(API_URL + "/refresh", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken })
+      credentials: "include"    // sends the refresh_token cookie automatically
     });
-
-    var data = await response.json();
-
-    if (response.ok) {
-      // Save the new tokens
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("refresh_token", data.refresh_token);
-      return true;    // Refreshed successfully!
-    } else {
-      return false;   // Refresh token also expired — must login again
-    }
-
+    return response.ok;
   } catch (error) {
     return false;
   }
@@ -193,21 +153,14 @@ async function refreshAccessToken() {
 
 // ─── MAKE AN AUTHENTICATED REQUEST (auto-refreshes token if expired) ─────────
 async function authFetch(url, options) {
-  var token = localStorage.getItem("token");
-
-  // Add the Authorization header
-  options.headers = options.headers || {};
-  options.headers["Authorization"] = "Bearer " + token;
+  options = options || {};
+  options.credentials = "include";    // always send cookies
 
   var response = await fetch(url, options);
 
-  // If token expired, try refreshing once
   if (response.status === 401) {
     var refreshed = await refreshAccessToken();
-
     if (refreshed) {
-      token = localStorage.getItem("token");
-      options.headers["Authorization"] = "Bearer " + token;
       response = await fetch(url, options);
     }
   }
@@ -218,58 +171,27 @@ async function authFetch(url, options) {
 
 // ─── LOAD DASHBOARD ───────────────────────────────────────────────────────────
 async function loadDashboard() {
-  var token = localStorage.getItem("token");
-
-  if (!token) {
-    window.location.href = "index.html";
-    return;
-  }
-
   try {
-    var response = await fetch(API_URL + "/me", {
-      method: "GET",
-      headers: { "Authorization": "Bearer " + token }
-    });
+    var response = await authFetch(API_URL + "/me", { method: "GET" });
 
-    // If access token expired, try refreshing it automatically
-    if (response.status === 401) {
-      var refreshed = await refreshAccessToken();
-
-      if (refreshed) {
-        // Try again with the NEW token
-        token = localStorage.getItem("token");
-        response = await fetch(API_URL + "/me", {
-          method: "GET",
-          headers: { "Authorization": "Bearer " + token }
-        });
-      } else {
-        // Refresh failed too — user must login again
-        localStorage.removeItem("token");
-        localStorage.removeItem("refresh_token");
-        window.location.href = "index.html";
-        return;
-      }
+    if (!response.ok) {
+      window.location.href = "index.html";
+      return;
     }
 
     var data = await response.json();
 
-    if (response.ok) {
-      document.getElementById("welcomeText").textContent = "Hello, " + data.username + "!";
-      document.getElementById("username").textContent = data.username;
-      document.getElementById("email").textContent = data.email;
-      document.getElementById("userId").textContent = data.id;
-      // Show photo if user has uploaded one, otherwise show letter avatar
-      if (data.profile_pic) {
-        document.getElementById("avatarImg").src = "http://127.0.0.1:8000" + data.profile_pic;
-        document.getElementById("avatarImg").style.display = "block";
-        document.getElementById("avatar").style.display = "none";
-      } else {
-        document.getElementById("avatar").textContent = data.username[0].toUpperCase();
-      }
+    document.getElementById("welcomeText").textContent = "Hello, " + data.username + "!";
+    document.getElementById("username").textContent = data.username;
+    document.getElementById("email").textContent = data.email;
+    document.getElementById("userId").textContent = data.id;
+
+    if (data.profile_pic) {
+      document.getElementById("avatarImg").src = "http://127.0.0.1:8000" + data.profile_pic;
+      document.getElementById("avatarImg").style.display = "block";
+      document.getElementById("avatar").style.display = "none";
     } else {
-      localStorage.removeItem("token");
-      localStorage.removeItem("refresh_token");
-      window.location.href = "index.html";
+      document.getElementById("avatar").textContent = data.username[0].toUpperCase();
     }
 
   } catch (error) {
@@ -278,31 +200,17 @@ async function loadDashboard() {
 }
 
 
-// ─── LOAD CURRENT PROFILE INFO ON SETTINGS PAGE ───────────────────────────────
-async function loadSettingsPage() {
-  var token = localStorage.getItem("token");
-
-  if (!token) {
-    window.location.href = "index.html";
-    return;
-  }
-
+// ─── LOGOUT FUNCTION ──────────────────────────────────────────────────────────
+async function logout() {
   try {
-    var response = await authFetch(API_URL + "/me", { method: "GET" });
-    var data = await response.json();
-
-    if (response.ok) {
-      document.getElementById("username").placeholder = "Current: " + data.username;
-      showAvatarOnSettings(data.profile_pic);
-
-      if (!data.profile_pic) {
-        document.getElementById("currentAvatarLetter").textContent = data.username[0].toUpperCase();
-      }
-    }
-
+    await fetch(API_URL + "/logout", {
+      method: "POST",
+      credentials: "include"
+    });
   } catch (error) {
-    console.log("Could not load profile info.");
+    // even if this fails, still redirect
   }
+  window.location.href = "index.html";
 }
 
 
@@ -354,14 +262,12 @@ async function resetPassword() {
     return;
   }
 
-  // Reuse the password strength check from Task 1
   var strength = isPasswordStrong(newPassword);
   if (!strength.valid) {
     showMessage(strength.reason, "error");
     return;
   }
 
-  // Get the token from the URL (e.g. ?token=xyz123)
   var urlParams = new URLSearchParams(window.location.search);
   var token = urlParams.get("token");
 
@@ -400,22 +306,6 @@ async function resetPassword() {
   btn.textContent = "Reset Password";
 }
 
-
-// ─── LOGOUT FUNCTION ──────────────────────────────────────────────────────────
-function logout() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("refresh_token");
-  window.location.href = "index.html";
-}
-
-
-// ─── AUTO-RUN: Load the right function based on which page we're on ──────────
-if (window.location.pathname.includes("dashboard.html")) {
-  loadDashboard();
-}
-if (window.location.pathname.includes("settings.html")) {
-  loadSettingsPage();
-}
 
 // ─── UPDATE USERNAME ──────────────────────────────────────────────────────────
 async function updateUsername() {
@@ -464,7 +354,6 @@ async function updatePassword() {
     return;
   }
 
-  // Reuse password strength check from Task 1
   var strength = isPasswordStrong(newPassword);
   if (!strength.valid) {
     showMessage(strength.reason, "error");
@@ -503,6 +392,7 @@ async function updatePassword() {
   btn.textContent = "Update Password";
 }
 
+
 // ─── UPLOAD PROFILE PICTURE ────────────────────────────────────────────────────
 async function uploadProfilePic() {
   var fileInput = document.getElementById("profilePicInput");
@@ -517,20 +407,13 @@ async function uploadProfilePic() {
   btn.disabled = true;
   btn.textContent = "Uploading...";
 
-  // FormData is how we send files (different from JSON!)
   var formData = new FormData();
   formData.append("file", file);
 
   try {
-    var token = localStorage.getItem("token");
-
     var response = await fetch(API_URL + "/upload-profile-pic", {
       method: "POST",
-      headers: {
-        "Authorization": "Bearer " + token
-        // NOTE: Don't set Content-Type manually for FormData —
-        // the browser sets it automatically with the correct boundary
-      },
+      credentials: "include",   // sends cookies; no Authorization header needed anymore!
       body: formData
     });
 
@@ -538,7 +421,6 @@ async function uploadProfilePic() {
 
     if (response.ok) {
       showMessage("Profile picture updated!", "success");
-      // Show the new picture immediately
       showAvatarOnSettings(data.profile_pic);
     } else {
       showMessage(data.detail, "error");
@@ -563,4 +445,38 @@ function showAvatarOnSettings(profilePicPath) {
   img.src = "http://127.0.0.1:8000" + profilePicPath;
   img.style.display = "block";
   letterDiv.style.display = "none";
+}
+
+
+// ─── LOAD CURRENT PROFILE INFO ON SETTINGS PAGE ───────────────────────────────
+async function loadSettingsPage() {
+  try {
+    var response = await authFetch(API_URL + "/me", { method: "GET" });
+
+    if (!response.ok) {
+      window.location.href = "index.html";
+      return;
+    }
+
+    var data = await response.json();
+
+    document.getElementById("username").placeholder = "Current: " + data.username;
+    showAvatarOnSettings(data.profile_pic);
+
+    if (!data.profile_pic) {
+      document.getElementById("currentAvatarLetter").textContent = data.username[0].toUpperCase();
+    }
+
+  } catch (error) {
+    console.log("Could not load profile info.");
+  }
+}
+
+
+// ─── AUTO-RUN: Load the right function based on which page we're on ──────────
+if (window.location.pathname.includes("dashboard.html")) {
+  loadDashboard();
+}
+if (window.location.pathname.includes("settings.html")) {
+  loadSettingsPage();
 }

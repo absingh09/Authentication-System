@@ -28,6 +28,7 @@ from backend.models import (
 from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File
 import uuid
 import os
+from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File, Response
 
 router = APIRouter()
 FRONTEND_URL = os.getenv("FRONTEND_URL")
@@ -57,7 +58,7 @@ def register(request: Request, user: UserRegister):
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
-def login(request: Request, user: UserLogin):
+def login(request: Request, user: UserLogin, response: Response):
     db_user = users_collection.find_one({"email": user.email})
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -65,41 +66,70 @@ def login(request: Request, user: UserLogin):
     if not verify_password(user.password, db_user["password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Create BOTH tokens now
     access_token = create_access_token(data={"sub": db_user["email"]})
     refresh_token = create_refresh_token(data={"sub": db_user["email"]})
 
+    # ─── SET HTTP-ONLY COOKIES ────────────────────────────────────────────────
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,        # JavaScript CANNOT read this — key security feature!
+        max_age=30 * 60,       # 30 minutes (in seconds)
+        samesite="lax",        # Protects against CSRF attacks
+        secure=False            # Set to True when using HTTPS in production
+    )
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=7 * 24 * 60 * 60,    # 7 days (in seconds)
+        samesite="lax",
+        secure=False
+    )
+
+    # We still return the tokens in the body too (optional, but harmless)
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
-
 # ─── REFRESH TOKEN (Get a new access token) ──────────────────────────────────
 @router.post("/refresh", response_model=Token)
-def refresh_token(body: RefreshRequest):
-    # 1. Decode the refresh token
-    payload = decode_access_token(body.refresh_token)
+def refresh_token(request: Request, response: Response):
+    # 1. Read refresh token from the COOKIE (not the request body anymore)
+    token = request.cookies.get("refresh_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token found")
+
+    payload = decode_access_token(token)
 
     if not payload:
         raise HTTPException(status_code=401, detail="Refresh token is invalid or expired")
 
-    # 2. Make sure it's actually a REFRESH token (not an access token being reused)
     if payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid token type")
 
-    # 3. Get the user's email from the token
     email = payload.get("sub")
 
-    # 4. Confirm user still exists
     db_user = users_collection.find_one({"email": email})
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # 5. Issue a brand NEW access token (and a new refresh token too)
     new_access_token = create_access_token(data={"sub": email})
     new_refresh_token = create_refresh_token(data={"sub": email})
+
+    # Set new cookies
+    response.set_cookie(
+        key="access_token", value=new_access_token,
+        httponly=True, max_age=30 * 60, samesite="lax", secure=False
+    )
+    response.set_cookie(
+        key="refresh_token", value=new_refresh_token,
+        httponly=True, max_age=7 * 24 * 60 * 60, samesite="lax", secure=False
+    )
 
     return {
         "access_token": new_access_token,
@@ -107,35 +137,26 @@ def refresh_token(body: RefreshRequest):
         "token_type": "bearer"
     }
 
-
-# ─── GET CURRENT USER (Protected Route) ──────────────────────────────────────
+# ─── get me ──────────────────────────────────
 @router.get("/me", response_model=UserResponse)
-def get_me(authorization: Optional[str] = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not logged in")
-
-    token = authorization.split(" ")[1]
-    payload = decode_access_token(token)
-
-    if not payload:
-        raise HTTPException(status_code=401, detail="Token is invalid or expired")
-
-    # Extra security: make sure this is an ACCESS token, not a refresh token
-    if payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    email = payload.get("sub")
+def get_me(request: Request):
+    email = get_current_user(request)
 
     db_user = users_collection.find_one({"email": email})
+
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
 
     return {
         "id": str(db_user["_id"]),
         "username": db_user["username"],
         "email": db_user["email"],
-        "profile_pic": db_user.get("profile_pic")    # ← NEW (None if not set yet)
+        "profile_pic": db_user.get("profile_pic")
     }
+
 # ─── FORGOT PASSWORD (Request a reset link) ──────────────────────────────────
 @router.post("/forgot-password")
 @limiter.limit("3/minute")
@@ -191,13 +212,14 @@ def reset_password(body: ResetPasswordRequest):
     return {"message": "Password reset successfully! You can now login."}
 
 
-# ─── HELPER: Get logged-in user from token ───────────────────────────────────
-def get_current_user(authorization: Optional[str]):
-    """Reusable function to verify token and return the user's email."""
-    if not authorization or not authorization.startswith("Bearer "):
+# ─── HELPER: Get logged-in user from COOKIE ──────────────────────────────────
+def get_current_user(request: Request):
+    """Reads the access_token cookie, verifies it, and returns the user's email."""
+    token = request.cookies.get("access_token")
+
+    if not token:
         raise HTTPException(status_code=401, detail="Not logged in")
 
-    token = authorization.split(" ")[1]
     payload = decode_access_token(token)
 
     if not payload:
@@ -206,14 +228,12 @@ def get_current_user(authorization: Optional[str]):
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Invalid token type")
 
-    return payload.get("sub")   # returns the email
-
+    return payload.get("sub")
 
 # ─── UPDATE PROFILE ───────────────────────────────────────────────────────────
 @router.put("/update", response_model=UserResponse)
-def update_profile(body: UpdateProfileRequest, authorization: Optional[str] = Header(None)):
-    # 1. Verify the user is logged in
-    email = get_current_user(authorization)
+def update_profile(body: UpdateProfileRequest, request: Request):
+    email = get_current_user(request)
 
     db_user = users_collection.find_one({"email": email})
     if not db_user:
@@ -259,10 +279,9 @@ MAX_FILE_SIZE_MB = 5
 @router.post("/upload-profile-pic", response_model=UserResponse)
 async def upload_profile_pic(
     file: UploadFile = File(...),
-    authorization: Optional[str] = Header(None)
+    request: Request = None
 ):
-    # 1. Verify the user is logged in
-    email = get_current_user(authorization)
+    email = get_current_user(request)
 
     db_user = users_collection.find_one({"email": email})
     if not db_user:
@@ -312,3 +331,10 @@ async def upload_profile_pic(
         "email": updated_user["email"],
         "profile_pic": updated_user.get("profile_pic")
     }
+
+# ─── LOGOUT (Clear cookies) ───────────────────────────────────────────────────
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
+    return {"message": "Logged out successfully"}
