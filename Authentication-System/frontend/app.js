@@ -1,5 +1,5 @@
 // The address of our FastAPI backend
-const API_URL = "http://127.0.0.1:8000/api/users";
+const API_URL = "https://authentication-system-4w2o.onrender.com/";
 
 
 // ─── HELPER: Show a message box ───────────────────────────────────────────────
@@ -187,7 +187,7 @@ async function loadDashboard() {
     document.getElementById("userId").textContent = data.id;
 
     if (data.profile_pic) {
-      document.getElementById("avatarImg").src = "http://127.0.0.1:8000" + data.profile_pic;
+      document.getElementById("avatarImg").src = "https://authentication-system-4w2o.onrender.com/" + data.profile_pic;
       document.getElementById("avatarImg").style.display = "block";
       document.getElementById("avatar").style.display = "none";
     } else {
@@ -442,7 +442,7 @@ function showAvatarOnSettings(profilePicPath) {
   var img = document.getElementById("currentAvatar");
   var letterDiv = document.getElementById("currentAvatarLetter");
 
-  img.src = "http://127.0.0.1:8000" + profilePicPath;
+  img.src = "https://authentication-system-4w2o.onrender.com/" + profilePicPath;
   img.style.display = "block";
   letterDiv.style.display = "none";
 }
