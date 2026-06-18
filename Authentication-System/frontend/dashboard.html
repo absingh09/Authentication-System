@@ -10,7 +10,7 @@
 
   <div class="dashboard-card">
 
-    <!-- Avatar shows first letter of username -->
+    <img id="avatarImg" class="avatar" style="display:none; object-fit: cover;" src="" alt="Profile" />
     <div class="avatar" id="avatar">?</div>
 
     <h1 id="welcomeText">Loading...</h1>
@@ -22,6 +22,10 @@
       <p>📧 Email: <span id="email">...</span></p>
       <p>🪪 User ID: <span id="userId">...</span></p>
     </div>
+
+    <a href="settings.html" class="btn btn-primary" style="display: block; text-decoration: none; text-align: center; margin-bottom: 10px;">
+      ⚙️ Settings
+    </a>
 
     <button class="btn btn-danger" onclick="logout()">
       Logout

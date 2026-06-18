@@ -20,6 +20,14 @@ import os
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from backend.models import (
+    UserRegister, UserLogin, Token, UserResponse,
+    RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest,
+    UpdateProfileRequest
+)
+from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File
+import uuid
+import os
 
 router = APIRouter()
 FRONTEND_URL = os.getenv("FRONTEND_URL")
@@ -125,9 +133,9 @@ def get_me(authorization: Optional[str] = Header(None)):
     return {
         "id": str(db_user["_id"]),
         "username": db_user["username"],
-        "email": db_user["email"]
+        "email": db_user["email"],
+        "profile_pic": db_user.get("profile_pic")    # ← NEW (None if not set yet)
     }
-
 # ─── FORGOT PASSWORD (Request a reset link) ──────────────────────────────────
 @router.post("/forgot-password")
 @limiter.limit("3/minute")
@@ -181,3 +189,126 @@ def reset_password(body: ResetPasswordRequest):
     )
 
     return {"message": "Password reset successfully! You can now login."}
+
+
+# ─── HELPER: Get logged-in user from token ───────────────────────────────────
+def get_current_user(authorization: Optional[str]):
+    """Reusable function to verify token and return the user's email."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not logged in")
+
+    token = authorization.split(" ")[1]
+    payload = decode_access_token(token)
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token is invalid or expired")
+
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    return payload.get("sub")   # returns the email
+
+
+# ─── UPDATE PROFILE ───────────────────────────────────────────────────────────
+@router.put("/update", response_model=UserResponse)
+def update_profile(body: UpdateProfileRequest, authorization: Optional[str] = Header(None)):
+    # 1. Verify the user is logged in
+    email = get_current_user(authorization)
+
+    db_user = users_collection.find_one({"email": email})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_fields = {}
+
+    # 2. Handle username change
+    if body.username:
+        update_fields["username"] = body.username
+
+    # 3. Handle password change (requires current password)
+    if body.new_password:
+        if not body.current_password:
+            raise HTTPException(status_code=400, detail="Current password is required to set a new password")
+
+        if not verify_password(body.current_password, db_user["password"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+        update_fields["password"] = hash_password(body.new_password)
+
+    # 4. If nothing was submitted to change
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    # 5. Update in MongoDB
+    users_collection.update_one({"email": email}, {"$set": update_fields})
+
+    # 6. Return the updated user
+    updated_user = users_collection.find_one({"email": email})
+    return {
+        "id": str(updated_user["_id"]),
+        "username": updated_user["username"],
+        "email": updated_user["email"]
+    }
+
+# ─── ALLOWED IMAGE TYPES & MAX SIZE ──────────────────────────────────────────
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
+MAX_FILE_SIZE_MB = 5
+
+
+# ─── UPLOAD PROFILE PICTURE ───────────────────────────────────────────────────
+@router.post("/upload-profile-pic", response_model=UserResponse)
+async def upload_profile_pic(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    # 1. Verify the user is logged in
+    email = get_current_user(authorization)
+
+    db_user = users_collection.find_one({"email": email})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2. Check the file extension is allowed
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Only JPG, PNG, and GIF are allowed."
+        )
+
+    # 3. Read the file content and check size
+    contents = await file.read()
+    file_size_mb = len(contents) / (1024 * 1024)
+
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Max size is {MAX_FILE_SIZE_MB}MB."
+        )
+
+    # 4. Generate a UNIQUE filename so users don't overwrite each other's photos
+    #    e.g. "a1b2c3d4-5678-90ab-cdef.jpg"
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = f"backend/static/profile_pics/{unique_filename}"
+
+    # 5. Save the file to disk
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    # 6. Build the URL the frontend will use to display the image
+    image_url = f"/static/profile_pics/{unique_filename}"
+
+    # 7. Save the URL in MongoDB
+    users_collection.update_one(
+        {"email": email},
+        {"$set": {"profile_pic": image_url}}
+    )
+
+    # 8. Return updated user
+    updated_user = users_collection.find_one({"email": email})
+    return {
+        "id": str(updated_user["_id"]),
+        "username": updated_user["username"],
+        "email": updated_user["email"],
+        "profile_pic": updated_user.get("profile_pic")
+    }

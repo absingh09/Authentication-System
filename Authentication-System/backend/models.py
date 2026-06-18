@@ -14,6 +14,7 @@ class UserResponse(BaseModel):
     id: str
     username: str
     email: str
+    profile_pic: Optional[str] = None     # ← NEW
 
 class Token(BaseModel):
     access_token: str
@@ -29,3 +30,8 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+class UpdateProfileRequest(BaseModel):
+    username: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
