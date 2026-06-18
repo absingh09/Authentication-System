@@ -16,7 +16,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5501"],   # ← Your exact frontend URL (Live Server)
+    allow_origins=["https://authentication-system-omega-vert.vercel.app/"],   # ← Your exact frontend URL (Live Server)
     allow_credentials=True,                     # ← Required for cookies to work
     allow_methods=["*"],
     allow_headers=["*"],

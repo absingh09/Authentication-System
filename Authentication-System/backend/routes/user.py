@@ -75,8 +75,8 @@ def login(request: Request, user: UserLogin, response: Response):
         value=access_token,
         httponly=True,        # JavaScript CANNOT read this — key security feature!
         max_age=30 * 60,       # 30 minutes (in seconds)
-        samesite="lax",        # Protects against CSRF attacks
-        secure=False            # Set to True when using HTTPS in production
+        samesite="none",        # Protects against CSRF attacks
+        secure=True             # Set to True when using HTTPS in production
     )
 
     response.set_cookie(
@@ -84,8 +84,8 @@ def login(request: Request, user: UserLogin, response: Response):
         value=refresh_token,
         httponly=True,
         max_age=7 * 24 * 60 * 60,    # 7 days (in seconds)
-        samesite="lax",
-        secure=False
+        samesite="none",
+        secure=True 
     )
 
     # We still return the tokens in the body too (optional, but harmless)
@@ -124,11 +124,11 @@ def refresh_token(request: Request, response: Response):
     # Set new cookies
     response.set_cookie(
         key="access_token", value=new_access_token,
-        httponly=True, max_age=30 * 60, samesite="lax", secure=False
+        httponly=True, max_age=30 * 60, samesite="none", secure=True 
     )
     response.set_cookie(
         key="refresh_token", value=new_refresh_token,
-        httponly=True, max_age=7 * 24 * 60 * 60, samesite="lax", secure=False
+        httponly=True, max_age=7 * 24 * 60 * 60, samesite="none", secure=True 
     )
 
     return {
