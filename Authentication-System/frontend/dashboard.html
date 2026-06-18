@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="dashboard-card">
+
+    <!-- Avatar shows first letter of username -->
+    <div class="avatar" id="avatar">?</div>
+
+    <h1 id="welcomeText">Loading...</h1>
+    <p style="color: #666; font-size: 14px;">You are successfully logged in!</p>
+
+    <!-- User info box -->
+    <div class="info-box">
+      <p>👤 Username: <span id="username">...</span></p>
+      <p>📧 Email: <span id="email">...</span></p>
+      <p>🪪 User ID: <span id="userId">...</span></p>
+    </div>
+
+    <button class="btn btn-danger" onclick="logout()">
+      Logout
+    </button>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
