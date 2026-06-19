@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File
 import uuid
 import os
 from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File, Response
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 FRONTEND_URL = os.getenv("FRONTEND_URL")
@@ -58,7 +59,7 @@ def register(request: Request, user: UserRegister):
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
-def login(request: Request, user: UserLogin, response: Response):
+def login(request: Request, user: UserLogin):
     db_user = users_collection.find_one({"email": user.email})
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -69,36 +70,39 @@ def login(request: Request, user: UserLogin, response: Response):
     access_token = create_access_token(data={"sub": db_user["email"]})
     refresh_token = create_refresh_token(data={"sub": db_user["email"]})
 
-    # ─── SET HTTP-ONLY COOKIES ────────────────────────────────────────────────
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,        # JavaScript CANNOT read this — key security feature!
-        max_age=30 * 60,       # 30 minutes (in seconds)
-        samesite="none",        # Protects against CSRF attacks
-        secure=True             # Set to True when using HTTPS in production
-    )
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        max_age=7 * 24 * 60 * 60,    # 7 days (in seconds)
-        samesite="none",
-        secure=True 
-    )
-
-    # We still return the tokens in the body too (optional, but harmless)
-    return {
+    # Build the response body ourselves
+    response_data = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
+    # Create the actual JSONResponse object and set cookies directly on it
+    json_response = JSONResponse(content=response_data)
+
+    json_response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        max_age=30 * 60,
+        samesite="none",
+        secure=True
+    )
+
+    json_response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        max_age=7 * 24 * 60 * 60,
+        samesite="none",
+        secure=True
+    )
+
+    return json_response
+
 # ─── REFRESH TOKEN (Get a new access token) ──────────────────────────────────
 @router.post("/refresh", response_model=Token)
-def refresh_token(request: Request, response: Response):
-    # 1. Read refresh token from the COOKIE (not the request body anymore)
+def refresh_token(request: Request):
     token = request.cookies.get("refresh_token")
 
     if not token:
@@ -121,22 +125,24 @@ def refresh_token(request: Request, response: Response):
     new_access_token = create_access_token(data={"sub": email})
     new_refresh_token = create_refresh_token(data={"sub": email})
 
-    # Set new cookies
-    response.set_cookie(
-        key="access_token", value=new_access_token,
-        httponly=True, max_age=30 * 60, samesite="none", secure=True 
-    )
-    response.set_cookie(
-        key="refresh_token", value=new_refresh_token,
-        httponly=True, max_age=7 * 24 * 60 * 60, samesite="none", secure=True 
-    )
-
-    return {
+    response_data = {
         "access_token": new_access_token,
         "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
 
+    json_response = JSONResponse(content=response_data)
+
+    json_response.set_cookie(
+        key="access_token", value=new_access_token,
+        httponly=True, max_age=30 * 60, samesite="none", secure=True
+    )
+    json_response.set_cookie(
+        key="refresh_token", value=new_refresh_token,
+        httponly=True, max_age=7 * 24 * 60 * 60, samesite="none", secure=True
+    )
+
+    return json_response
 # ─── get me ──────────────────────────────────
 @router.get("/me", response_model=UserResponse)
 def get_me(request: Request):
@@ -334,7 +340,8 @@ async def upload_profile_pic(
 
 # ─── LOGOUT (Clear cookies) ───────────────────────────────────────────────────
 @router.post("/logout")
-def logout(response: Response):
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
-    return {"message": "Logged out successfully"}
+def logout():
+    json_response = JSONResponse(content={"message": "Logged out successfully"})
+    json_response.delete_cookie("access_token")
+    json_response.delete_cookie("refresh_token")
+    return json_response
