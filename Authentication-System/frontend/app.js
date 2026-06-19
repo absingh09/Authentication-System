@@ -1,5 +1,5 @@
 // The address of our FastAPI backend
-const API_URL = "https://authentication-system-4w2o.onrender.com";
+const API_URL = "https://authentication-system-4w2o.onrender.com/api/users";
 
 
 // ─── HELPER: Show a message box ───────────────────────────────────────────────
@@ -77,7 +77,7 @@ async function register() {
 
     if (response.ok) {
       showMessage("Account created! Redirecting to login...", "success");
-      setTimeout(function() {
+      setTimeout(function () {
         window.location.href = "index.html";
       }, 1500);
     } else if (response.status === 429) {
@@ -291,7 +291,7 @@ async function resetPassword() {
 
     if (response.ok) {
       showMessage(data.message + " Redirecting to login...", "success");
-      setTimeout(function() {
+      setTimeout(function () {
         window.location.href = "index.html";
       }, 2000);
     } else {
