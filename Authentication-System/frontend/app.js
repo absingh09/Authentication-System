@@ -1,5 +1,11 @@
 // The address of our FastAPI backend
-const API_URL = "https://authentication-system-4w2o.onrender.com/api/users";
+const API_URL = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
+  ? "http://127.0.0.1:8000/api/users"
+  : "https://authentication-system-4w2o.onrender.com/api/users";
+
+const PIC_BASE_URL = window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost"
+  ? "http://127.0.0.1:8000"
+  : "https://authentication-system-4w2o.onrender.com";
 
 
 // ─── HELPER: Show a message box ───────────────────────────────────────────────
@@ -113,14 +119,14 @@ async function login() {
     var response = await fetch(API_URL + "/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      credentials: "include",     // ← IMPORTANT: lets the browser store the cookies sent back
       body: JSON.stringify({ email: email, password: password })
     });
 
     var data = await response.json();
 
     if (response.ok) {
-      // No more localStorage! Cookies are set automatically by the browser.
+      localStorage.setItem("access_token", data.access_token);
+      localStorage.setItem("refresh_token", data.refresh_token);
       window.location.href = "dashboard.html";
     } else if (response.status === 429) {
       showMessage("Too many login attempts. Please wait a minute and try again.", "error");
@@ -139,12 +145,28 @@ async function login() {
 
 // ─── REFRESH THE ACCESS TOKEN ─────────────────────────────────────────────────
 async function refreshAccessToken() {
+  var refreshToken = localStorage.getItem("refresh_token");
+  if (!refreshToken) {
+    return false;
+  }
+
   try {
     var response = await fetch(API_URL + "/refresh", {
       method: "POST",
-      credentials: "include"    // sends the refresh_token cookie automatically
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken })
     });
-    return response.ok;
+
+    if (response.ok) {
+      var data = await response.json();
+      localStorage.setItem("access_token", data.access_token);
+      localStorage.setItem("refresh_token", data.refresh_token);
+      return true;
+    } else {
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("refresh_token");
+      return false;
+    }
   } catch (error) {
     return false;
   }
@@ -154,13 +176,22 @@ async function refreshAccessToken() {
 // ─── MAKE AN AUTHENTICATED REQUEST (auto-refreshes token if expired) ─────────
 async function authFetch(url, options) {
   options = options || {};
-  options.credentials = "include";    // always send cookies
+  options.headers = options.headers || {};
+
+  var token = localStorage.getItem("access_token");
+  if (token) {
+    options.headers["Authorization"] = "Bearer " + token;
+  }
 
   var response = await fetch(url, options);
 
   if (response.status === 401) {
     var refreshed = await refreshAccessToken();
     if (refreshed) {
+      var newToken = localStorage.getItem("access_token");
+      if (newToken) {
+        options.headers["Authorization"] = "Bearer " + newToken;
+      }
       response = await fetch(url, options);
     }
   }
@@ -187,7 +218,7 @@ async function loadDashboard() {
     document.getElementById("userId").textContent = data.id;
 
     if (data.profile_pic) {
-      document.getElementById("avatarImg").src = "https://authentication-system-4w2o.onrender.com/" + data.profile_pic;
+      document.getElementById("avatarImg").src = PIC_BASE_URL + data.profile_pic;
       document.getElementById("avatarImg").style.display = "block";
       document.getElementById("avatar").style.display = "none";
     } else {
@@ -203,13 +234,20 @@ async function loadDashboard() {
 // ─── LOGOUT FUNCTION ──────────────────────────────────────────────────────────
 async function logout() {
   try {
+    var token = localStorage.getItem("access_token");
+    var headers = {};
+    if (token) {
+      headers["Authorization"] = "Bearer " + token;
+    }
     await fetch(API_URL + "/logout", {
       method: "POST",
-      credentials: "include"
+      headers: headers
     });
   } catch (error) {
     // even if this fails, still redirect
   }
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("refresh_token");
   window.location.href = "index.html";
 }
 
@@ -411,9 +449,8 @@ async function uploadProfilePic() {
   formData.append("file", file);
 
   try {
-    var response = await fetch(API_URL + "/upload-profile-pic", {
+    var response = await authFetch(API_URL + "/upload-profile-pic", {
       method: "POST",
-      credentials: "include",   // sends cookies; no Authorization header needed anymore!
       body: formData
     });
 
@@ -442,7 +479,7 @@ function showAvatarOnSettings(profilePicPath) {
   var img = document.getElementById("currentAvatar");
   var letterDiv = document.getElementById("currentAvatarLetter");
 
-  img.src = "https://authentication-system-4w2o.onrender.com/" + profilePicPath;
+  img.src = PIC_BASE_URL + profilePicPath;
   img.style.display = "block";
   letterDiv.style.display = "none";
 }

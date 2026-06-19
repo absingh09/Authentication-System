@@ -70,40 +70,16 @@ def login(request: Request, user: UserLogin):
     access_token = create_access_token(data={"sub": db_user["email"]})
     refresh_token = create_refresh_token(data={"sub": db_user["email"]})
 
-    # Build the response body ourselves
-    response_data = {
+    return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
-    # Create the actual JSONResponse object and set cookies directly on it
-    json_response = JSONResponse(content=response_data)
-
-    json_response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        max_age=30 * 60,
-        samesite="none",
-        secure=True
-    )
-
-    json_response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        max_age=7 * 24 * 60 * 60,
-        samesite="none",
-        secure=True
-    )
-
-    return json_response
-
 # ─── REFRESH TOKEN (Get a new access token) ──────────────────────────────────
 @router.post("/refresh", response_model=Token)
-def refresh_token(request: Request):
-    token = request.cookies.get("refresh_token")
+def refresh_token(body: RefreshRequest):
+    token = body.refresh_token
 
     if not token:
         raise HTTPException(status_code=401, detail="No refresh token found")
@@ -125,24 +101,11 @@ def refresh_token(request: Request):
     new_access_token = create_access_token(data={"sub": email})
     new_refresh_token = create_refresh_token(data={"sub": email})
 
-    response_data = {
+    return {
         "access_token": new_access_token,
         "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
-
-    json_response = JSONResponse(content=response_data)
-
-    json_response.set_cookie(
-        key="access_token", value=new_access_token,
-        httponly=True, max_age=30 * 60, samesite="none", secure=True
-    )
-    json_response.set_cookie(
-        key="refresh_token", value=new_refresh_token,
-        httponly=True, max_age=7 * 24 * 60 * 60, samesite="none", secure=True
-    )
-
-    return json_response
 # ─── get me ──────────────────────────────────
 @router.get("/me", response_model=UserResponse)
 def get_me(request: Request):
@@ -218,13 +181,19 @@ def reset_password(body: ResetPasswordRequest):
     return {"message": "Password reset successfully! You can now login."}
 
 
-# ─── HELPER: Get logged-in user from COOKIE ──────────────────────────────────
+# ─── HELPER: Get logged-in user from Authorization Header ───────────────────
 def get_current_user(request: Request):
-    """Reads the access_token cookie, verifies it, and returns the user's email."""
-    token = request.cookies.get("access_token")
+    """Reads the access token from the Authorization header, verifies it, and returns the user's email."""
+    auth_header = request.headers.get("Authorization")
 
-    if not token:
+    if not auth_header:
         raise HTTPException(status_code=401, detail="Not logged in")
+
+    parts = auth_header.split(" ")
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization header format")
+
+    token = parts[1]
 
     payload = decode_access_token(token)
 
@@ -338,10 +307,7 @@ async def upload_profile_pic(
         "profile_pic": updated_user.get("profile_pic")
     }
 
-# ─── LOGOUT (Clear cookies) ───────────────────────────────────────────────────
+# ─── LOGOUT ───────────────────────────────────────────────────────────────────
 @router.post("/logout")
 def logout():
-    json_response = JSONResponse(content={"message": "Logged out successfully"})
-    json_response.delete_cookie("access_token")
-    json_response.delete_cookie("refresh_token")
-    return json_response
+    return {"message": "Logged out successfully"}
