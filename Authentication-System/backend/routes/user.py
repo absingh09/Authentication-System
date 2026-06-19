@@ -146,7 +146,13 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest):
     reset_link = f"{FRONTEND_URL}/reset-password.html?token={reset_token}"
 
     # 4. Send the email
-    await send_reset_email(body.email, reset_link)
+    try:
+        await send_reset_email(body.email, reset_link)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Email delivery failed. Please check credentials or email service configuration. Error: {str(e)}"
+        )
 
     return {"message": "If that email exists, a reset link has been sent."}
 
