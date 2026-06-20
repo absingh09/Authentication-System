@@ -73,21 +73,22 @@ export const useAuthStore = create(
       },
 
       logout: async () => {
-        const token = get().accessToken;
+        const { accessToken, refreshToken } = get();
         set({ isLoading: true });
-        
+
         try {
-          if (token) {
-            // Attempt clean logout on backend
-            await axios.post(`${API_URL}/logout`, {}, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
+          if (accessToken) {
+            // Send refresh_token in body so backend can revoke it from the DB
+            await axios.post(
+              `${API_URL}/logout`,
+              { refresh_token: refreshToken || null },
+              { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
           }
         } catch (e) {
-          // Ignore logout error and proceed with client-side cleanup
+          // Ignore backend errors — always clear client state
         }
 
-        // Reset state
         set({
           user: null,
           accessToken: null,
@@ -95,8 +96,6 @@ export const useAuthStore = create(
           isAuthenticated: false,
           isLoading: false,
         });
-        
-        set({ isLoading: false });
       },
 
       fetchCurrentUser: async () => {

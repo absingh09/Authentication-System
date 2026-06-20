@@ -1,319 +1,352 @@
-from fastapi import APIRouter, HTTPException, Header, Request
-from backend.models import (
-    UserRegister, UserLogin, Token, UserResponse,
-    RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest
-)
-from backend.database import users_collection
+import hashlib
+import logging
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+
+from backend import database as db_module
 from backend.auth import (
-    hash_password,
-    verify_password,
     create_access_token,
     create_refresh_token,
     create_reset_token,
-    decode_access_token
+    decode_token,
+    hash_password,
+    verify_password,
 )
 from backend.email_utils import send_reset_email
-from bson import ObjectId
-from typing import Optional
-from dotenv import load_dotenv
-import os
-
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from backend.models import (
-    UserRegister, UserLogin, Token, UserResponse,
-    RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    UpdateProfileRequest
+    ForgotPasswordRequest,
+    LogoutRequest,
+    RefreshRequest,
+    ResetPasswordRequest,
+    Token,
+    UpdateProfileRequest,
+    UserLogin,
+    UserRegister,
+    UserResponse,
 )
-from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File
-import uuid
-import os
-from fastapi import APIRouter, HTTPException, Header, Request, UploadFile, File, Response
-from fastapi.responses import JSONResponse
+from backend.storage import upload_profile_picture, verify_image_mime
+from dotenv import load_dotenv
 
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
-FRONTEND_URL = os.getenv("FRONTEND_URL")
-limiter = Limiter(key_func=get_remote_address)
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://authentication-system-omega-vert.vercel.app")
+
+# ─── File upload constraints ──────────────────────────────────────────────────
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
+MAX_FILE_SIZE_MB = 5
+
+
+# ─── DEPENDENCY: get authenticated user email from Bearer token ───────────────
+async def get_current_user(request: Request) -> str:
+    """
+    FastAPI Dependency. Reads the Authorization header, verifies the JWT,
+    and returns the authenticated user's email.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Not logged in. No Authorization header.")
+
+    parts = auth_header.split(" ")
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format.")
+
+    token = parts[1]
+    payload = decode_token(token)
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token is invalid or expired.")
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type.")
+
+    return payload.get("sub")
+
+
+# ─── Helper: hash a refresh token for safe DB storage ────────────────────────
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+# ─── Helper: store a new refresh token in DB ─────────────────────────────────
+async def _store_refresh_token(email: str, refresh_token: str) -> None:
+    expire = datetime.now(timezone.utc) + timedelta(days=int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7")))
+    await db_module.refresh_tokens_collection.insert_one({
+        "token_hash": _hash_token(refresh_token),
+        "user_email": email,
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": expire,
+    })
 
 
 # ─── REGISTER ────────────────────────────────────────────────────────────────
-@router.post("/register")
-@limiter.limit("5/minute")
-def register(request: Request, user: UserRegister):
-    existing_user = users_collection.find_one({"email": user.email})
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
-    hashed = hash_password(user.password)
+limiter = Limiter(key_func=get_remote_address)
+
+
+@router.post("/register", status_code=201)
+@limiter.limit("5/minute")
+async def register(request: Request, user: UserRegister):
+    existing_user = await db_module.users_collection.find_one({"email": user.email})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered.")
+
+    # Also check username uniqueness
+    existing_username = await db_module.users_collection.find_one({"username": user.username})
+    if existing_username:
+        raise HTTPException(status_code=400, detail="Username already taken.")
 
     new_user = {
         "username": user.username,
         "email": user.email,
-        "password": hashed
+        "password": hash_password(user.password),
+        "profile_pic": None,
+        "created_at": datetime.now(timezone.utc),
     }
-    result = users_collection.insert_one(new_user)
-
+    result = await db_module.users_collection.insert_one(new_user)
+    logger.info(f"New user registered: {user.email}")
     return {"message": "Account created successfully!", "id": str(result.inserted_id)}
 
 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
-def login(request: Request, user: UserLogin):
-    db_user = users_collection.find_one({"email": user.email})
-    if not db_user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    if not verify_password(user.password, db_user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+async def login(request: Request, user: UserLogin):
+    db_user = await db_module.users_collection.find_one({"email": user.email})
+    if not db_user or not verify_password(user.password, db_user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     access_token = create_access_token(data={"sub": db_user["email"]})
     refresh_token = create_refresh_token(data={"sub": db_user["email"]})
 
+    # Persist refresh token hash in DB for revocation support
+    await _store_refresh_token(db_user["email"], refresh_token)
+    logger.info(f"User logged in: {db_user['email']}")
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
-# ─── REFRESH TOKEN (Get a new access token) ──────────────────────────────────
+
+# ─── REFRESH TOKEN ───────────────────────────────────────────────────────────
 @router.post("/refresh", response_model=Token)
-def refresh_token(body: RefreshRequest):
+async def refresh_token_endpoint(body: RefreshRequest):
     token = body.refresh_token
 
-    if not token:
-        raise HTTPException(status_code=401, detail="No refresh token found")
-
-    payload = decode_access_token(token)
-
+    payload = decode_token(token)
     if not payload:
-        raise HTTPException(status_code=401, detail="Refresh token is invalid or expired")
-
+        raise HTTPException(status_code=401, detail="Refresh token is invalid or expired.")
     if payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+        raise HTTPException(status_code=401, detail="Invalid token type.")
+
+    # Verify this token hasn't been revoked
+    token_hash = _hash_token(token)
+    stored = await db_module.refresh_tokens_collection.find_one({"token_hash": token_hash})
+    if not stored:
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked.")
 
     email = payload.get("sub")
-
-    db_user = users_collection.find_one({"email": email})
+    db_user = await db_module.users_collection.find_one({"email": email})
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Rotate tokens — invalidate old refresh token, issue new pair
+    await db_module.refresh_tokens_collection.delete_one({"token_hash": token_hash})
 
     new_access_token = create_access_token(data={"sub": email})
     new_refresh_token = create_refresh_token(data={"sub": email})
+    await _store_refresh_token(email, new_refresh_token)
 
     return {
         "access_token": new_access_token,
         "refresh_token": new_refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
-# ─── get me ──────────────────────────────────
+
+
+# ─── GET ME (current user profile) ───────────────────────────────────────────
 @router.get("/me", response_model=UserResponse)
-def get_me(request: Request):
-    email = get_current_user(request)
-
-    db_user = users_collection.find_one({"email": email})
-
+async def get_me(email: str = Depends(get_current_user)):
+    db_user = await db_module.users_collection.find_one({"email": email})
     if not db_user:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=404, detail="User not found.")
 
     return {
         "id": str(db_user["_id"]),
         "username": db_user["username"],
         "email": db_user["email"],
-        "profile_pic": db_user.get("profile_pic")
+        "profile_pic": db_user.get("profile_pic"),
     }
 
-# ─── FORGOT PASSWORD (Request a reset link) ──────────────────────────────────
+
+# ─── FORGOT PASSWORD ─────────────────────────────────────────────────────────
 @router.post("/forgot-password")
 @limiter.limit("3/minute")
 async def forgot_password(request: Request, body: ForgotPasswordRequest):
-    # 1. Check if user exists
-    db_user = users_collection.find_one({"email": body.email})
+    db_user = await db_module.users_collection.find_one({"email": body.email})
 
-    # 🔒 Security note: we always return the SAME message whether the email
-    # exists or not. This prevents attackers from using this endpoint to
-    # discover which emails are registered in our system.
+    # Anti-enumeration: always return the same message regardless of whether email exists
     if not db_user:
         return {"message": "If that email exists, a reset link has been sent."}
 
-    # 2. Create a reset token containing the user's email
-    reset_token = create_reset_token(data={"sub": body.email})
+    # Create a single-use reset token (token + unique JTI)
+    reset_token, jti = create_reset_token(data={"sub": body.email})
 
-    # 3. Build the reset link
-    reset_link = f"{FRONTEND_URL}/reset-password.html?token={reset_token}"
+    # Store JTI in user document — only this JTI will be accepted for this reset
+    await db_module.users_collection.update_one(
+        {"email": body.email},
+        {"$set": {"reset_jti": jti, "reset_requested_at": datetime.now(timezone.utc)}},
+    )
 
-    # 4. Send the email
+    # Build reset link pointing to the React frontend (no .html)
+    reset_link = f"{FRONTEND_URL}/reset-password?token={reset_token}"
+
     try:
         await send_reset_email(body.email, reset_link)
     except Exception as e:
+        logger.error(f"Failed to send reset email to {body.email}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Email delivery failed. Please check credentials or email service configuration. Error: {str(e)}"
+            detail="Email delivery failed. Please check mail configuration.",
         )
 
     return {"message": "If that email exists, a reset link has been sent."}
 
 
-# ─── RESET PASSWORD (Set new password using the token) ───────────────────────
+# ─── RESET PASSWORD ──────────────────────────────────────────────────────────
 @router.post("/reset-password")
-def reset_password(body: ResetPasswordRequest):
-    # 1. Decode the reset token
-    payload = decode_access_token(body.token)
-
+async def reset_password(body: ResetPasswordRequest):
+    payload = decode_token(body.token)
     if not payload:
-        raise HTTPException(status_code=400, detail="Reset link is invalid or expired")
-
-    # 2. Make sure it's actually a RESET token
+        raise HTTPException(status_code=400, detail="Reset link is invalid or expired.")
     if payload.get("type") != "reset":
-        raise HTTPException(status_code=400, detail="Invalid token type")
+        raise HTTPException(status_code=400, detail="Invalid token type.")
 
     email = payload.get("sub")
+    jti = payload.get("jti")
 
-    # 3. Confirm user still exists
-    db_user = users_collection.find_one({"email": email})
+    # Find user AND verify JTI matches — enforces single-use reset links
+    db_user = await db_module.users_collection.find_one({"email": email, "reset_jti": jti})
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=400, detail="Reset link has already been used or is invalid.")
 
-    # 4. Hash the new password and update it in MongoDB
-    new_hashed_password = hash_password(body.new_password)
-    users_collection.update_one(
+    # Update password and clear the JTI so this link cannot be reused
+    await db_module.users_collection.update_one(
         {"email": email},
-        {"$set": {"password": new_hashed_password}}
+        {
+            "$set": {"password": hash_password(body.new_password)},
+            "$unset": {"reset_jti": "", "reset_requested_at": ""},
+        },
     )
 
-    return {"message": "Password reset successfully! You can now login."}
+    # Revoke all active refresh tokens for this user (force re-login after password reset)
+    await db_module.refresh_tokens_collection.delete_many({"user_email": email})
+
+    logger.info(f"Password reset successfully for: {email}")
+    return {"message": "Password reset successfully! You can now log in."}
 
 
-# ─── HELPER: Get logged-in user from Authorization Header ───────────────────
-def get_current_user(request: Request):
-    """Reads the access token from the Authorization header, verifies it, and returns the user's email."""
-    auth_header = request.headers.get("Authorization")
-
-    if not auth_header:
-        raise HTTPException(status_code=401, detail="Not logged in")
-
-    parts = auth_header.split(" ")
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-
-    token = parts[1]
-
-    payload = decode_access_token(token)
-
-    if not payload:
-        raise HTTPException(status_code=401, detail="Token is invalid or expired")
-
-    if payload.get("type") != "access":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    return payload.get("sub")
-
-# ─── UPDATE PROFILE ───────────────────────────────────────────────────────────
+# ─── UPDATE PROFILE ──────────────────────────────────────────────────────────
 @router.put("/update", response_model=UserResponse)
-def update_profile(body: UpdateProfileRequest, request: Request):
-    email = get_current_user(request)
-
-    db_user = users_collection.find_one({"email": email})
+async def update_profile(body: UpdateProfileRequest, email: str = Depends(get_current_user)):
+    db_user = await db_module.users_collection.find_one({"email": email})
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found.")
 
-    update_fields = {}
+    update_fields: dict = {}
 
-    # 2. Handle username change
     if body.username:
+        # Check new username not already taken by another user
+        existing = await db_module.users_collection.find_one(
+            {"username": body.username, "email": {"$ne": email}}
+        )
+        if existing:
+            raise HTTPException(status_code=400, detail="Username already taken.")
         update_fields["username"] = body.username
 
-    # 3. Handle password change (requires current password)
     if body.new_password:
         if not body.current_password:
-            raise HTTPException(status_code=400, detail="Current password is required to set a new password")
-
+            raise HTTPException(status_code=400, detail="Current password is required.")
         if not verify_password(body.current_password, db_user["password"]):
-            raise HTTPException(status_code=401, detail="Current password is incorrect")
-
+            raise HTTPException(status_code=401, detail="Current password is incorrect.")
         update_fields["password"] = hash_password(body.new_password)
 
-    # 4. If nothing was submitted to change
     if not update_fields:
-        raise HTTPException(status_code=400, detail="Nothing to update")
+        raise HTTPException(status_code=400, detail="Nothing to update.")
 
-    # 5. Update in MongoDB
-    users_collection.update_one({"email": email}, {"$set": update_fields})
+    await db_module.users_collection.update_one({"email": email}, {"$set": update_fields})
 
-    # 6. Return the updated user
-    updated_user = users_collection.find_one({"email": email})
+    updated = await db_module.users_collection.find_one({"email": email})
     return {
-        "id": str(updated_user["_id"]),
-        "username": updated_user["username"],
-        "email": updated_user["email"]
+        "id": str(updated["_id"]),
+        "username": updated["username"],
+        "email": updated["email"],
+        "profile_pic": updated.get("profile_pic"),   # ← was missing before
     }
 
-# ─── ALLOWED IMAGE TYPES & MAX SIZE ──────────────────────────────────────────
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
-MAX_FILE_SIZE_MB = 5
 
-
-# ─── UPLOAD PROFILE PICTURE ───────────────────────────────────────────────────
+# ─── UPLOAD PROFILE PICTURE ──────────────────────────────────────────────────
 @router.post("/upload-profile-pic", response_model=UserResponse)
 async def upload_profile_pic(
     file: UploadFile = File(...),
-    request: Request = None
+    email: str = Depends(get_current_user),
 ):
-    email = get_current_user(request)
-
-    db_user = users_collection.find_one({"email": email})
+    db_user = await db_module.users_collection.find_one({"email": email})
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found.")
 
-    # 2. Check the file extension is allowed
-    file_ext = os.path.splitext(file.filename)[1].lower()
+    # Validate file extension
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid file type. Only JPG, PNG, and GIF are allowed."
-        )
+        raise HTTPException(status_code=400, detail="Invalid file type. Only JPG, PNG, and GIF are allowed.")
 
-    # 3. Read the file content and check size
+    # Read and check file size
     contents = await file.read()
-    file_size_mb = len(contents) / (1024 * 1024)
+    size_mb = len(contents) / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise HTTPException(status_code=400, detail=f"File too large. Max allowed size is {MAX_FILE_SIZE_MB} MB.")
 
-    if file_size_mb > MAX_FILE_SIZE_MB:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Max size is {MAX_FILE_SIZE_MB}MB."
-        )
+    # Validate MIME type via magic bytes (not just extension)
+    if not verify_image_mime(contents):
+        raise HTTPException(status_code=400, detail="File content does not match an allowed image type.")
 
-    # 4. Generate a UNIQUE filename so users don't overwrite each other's photos
-    #    e.g. "a1b2c3d4-5678-90ab-cdef.jpg"
-    unique_filename = f"{uuid.uuid4()}{file_ext}"
-    file_path = f"backend/static/profile_pics/{unique_filename}"
+    # Upload (Cloudinary in prod, local disk in dev)
+    image_url = await upload_profile_picture(contents, file_ext)
 
-    # 5. Save the file to disk
-    with open(file_path, "wb") as f:
-        f.write(contents)
-
-    # 6. Build the URL the frontend will use to display the image
-    image_url = f"/static/profile_pics/{unique_filename}"
-
-    # 7. Save the URL in MongoDB
-    users_collection.update_one(
+    await db_module.users_collection.update_one(
         {"email": email},
-        {"$set": {"profile_pic": image_url}}
+        {"$set": {"profile_pic": image_url}},
     )
 
-    # 8. Return updated user
-    updated_user = users_collection.find_one({"email": email})
+    updated = await db_module.users_collection.find_one({"email": email})
     return {
-        "id": str(updated_user["_id"]),
-        "username": updated_user["username"],
-        "email": updated_user["email"],
-        "profile_pic": updated_user.get("profile_pic")
+        "id": str(updated["_id"]),
+        "username": updated["username"],
+        "email": updated["email"],
+        "profile_pic": updated.get("profile_pic"),
     }
 
-# ─── LOGOUT ───────────────────────────────────────────────────────────────────
+
+# ─── LOGOUT ──────────────────────────────────────────────────────────────────
 @router.post("/logout")
-def logout():
-    return {"message": "Logged out successfully"}
+async def logout(body: LogoutRequest = None, email: str = Depends(get_current_user)):
+    """
+    Revokes the provided refresh token from the database.
+    Even without a token, clears any expired tokens for this user.
+    """
+    if body and body.refresh_token:
+        token_hash = _hash_token(body.refresh_token)
+        result = await db_module.refresh_tokens_collection.delete_one({"token_hash": token_hash})
+        if result.deleted_count:
+            logger.info(f"Refresh token revoked for: {email}")
+
+    return {"message": "Logged out successfully."}
