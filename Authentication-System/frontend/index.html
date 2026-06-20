@@ -1,42 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Login</title>
-  <link rel="stylesheet" href="style.css" />
-</head>
-<body>
-
-  <div class="card">
-    <h1>Welcome Back</h1>
-    <p class="subtitle">Login to your account</p>
-
-    <!-- This box shows success or error messages -->
-    <div class="message" id="message"></div>
-
-    <div class="form-group">
-      <label for="email">Email</label>
-      <input type="email" id="email" placeholder="Enter your email" />
-    </div>
-
-    <div class="form-group">
-      <label for="password">Password</label>
-      <input type="password" id="password" placeholder="Enter your password" />
-    </div>
-
-    <button class="btn btn-primary" id="loginBtn" onclick="login()">
-      Login
-    </button>
-
-    <div class="link-row">
-      <a href="forgot-password.html">Forgot password?</a>
-    </div>
-    <div class="link-row">
-      Don't have an account? <a href="register.html">Sign up here</a>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
-</body>
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A premium, production-ready SaaS authentication starter template featuring user registration, login, profile management, settings, JWT authentication, and refresh tokens." />
+    <title>SaaS Auth System</title>
+  </head>
+  <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors duration-300">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
